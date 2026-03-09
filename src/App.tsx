@@ -1,658 +1,1580 @@
-import React, { useMemo, useState } from 'react'
-
-type Trade = 'Concrete' | 'HVAC' | 'Painting' | 'Plumbing' | 'Electric' | 'Flooring' | 'Construction'
-type ProjectStatus = 'Bidding' | 'Awarding' | 'Awarded'
-type FeeBasis = 'awarded' | 'forecast'
+import { useEffect, useMemo, useState } from "react";
+import { supabase } from "./lib/supabase";
 
 type Project = {
-  id: string
-  address: string
-  status: ProjectStatus
-  feePercent: number // e.g., 0.05
-  feeBasis: FeeBasis
-}
+  id: string;
+  name: string;
+  start_date: string | null;
+  end_date: string | null;
+  owner_id: string;
+  created_at: string;
+};
 
-type Vendor = { id: string; name: string; trade: Trade; email?: string; phone?: string }
+type Trade = {
+  id: string;
+  project_id: string;
+  name: string;
+  created_at: string;
+};
 
-type Estimate = {
-  id: string
-  projectId: string
-  trade: Trade
-  vendorId: string
-  quoteNo?: string
-  amount: number
-  date?: string
-  notes?: string
-}
+type VendorEstimate = {
+  id: string;
+  trade_id: string;
+  vendor_name: string;
+  estimate_amount: number;
+  notes: string | null;
+  received_at: string | null;
+  status: "pending" | "awarded" | "denied";
+  decision_notes: string | null;
+  awarded_at: string | null;
+  created_at: string;
+  file_path: string | null;
+};
 
-type Award = {
-  id: string
-  projectId: string
-  trade: Trade
-  vendorId: string
-  amount: number
-  startDate?: string
-  endDate?: string
-  notes?: string
-}
+type EstimateDraft = {
+  vendor_name: string;
+  estimate_amount: string;
+  received_at: string;
+  notes: string;
+  status: "pending" | "awarded" | "denied";
+};
 
-type TradeSchedule = {
-  projectId: string
-  trade: Trade
-  startDate?: string
-  endDate?: string
-  status: 'Not started' | 'Scheduled' | 'In progress' | 'Complete'
-}
+type AuthMode = "signin" | "signup";
+type ShareRole = "viewer" | "editor";
+type ProjectRole = "owner" | "editor" | "viewer";
 
-const uid = () => Math.random().toString(36).slice(2, 10)
+type ProjectMember = {
+  project_id: string;
+  user_id: string;
+  role: ProjectRole;
+  profiles?: {
+    email: string | null;
+  } | null;
+};
 
-const money = (n: number) =>
-  n.toLocaleString(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 2 })
+const COMMON_TRADES = [
+  "Demolition",
+  "Sitework",
+  "Concrete",
+  "Masonry",
+  "Structural Steel",
+  "Framing",
+  "Roofing",
+  "Siding",
+  "Windows",
+  "Doors / Hardware",
+  "Drywall",
+  "Painting",
+  "Flooring",
+  "Ceilings",
+  "Millwork",
+  "Electrical",
+  "Plumbing",
+  "HVAC",
+  "Fire Protection",
+  "Insulation",
+  "Landscaping",
+  "Final Cleaning",
+];
 
-const TRADES: Trade[] = ['Concrete', 'HVAC', 'Painting', 'Plumbing', 'Electric', 'Flooring', 'Construction']
+const inputStyle: React.CSSProperties = {
+  color: "black",
+  backgroundColor: "white",
+  border: "1px solid #999",
+};
 
-const seedProject: Project = {
-  id: 'P-124',
-  address: '124 N Broad',
-  status: 'Awarding',
-  feePercent: 0.05,
-  feeBasis: 'awarded',
-}
+const tableHeaderStyle: React.CSSProperties = {
+  textAlign: "left",
+  borderBottom: "2px solid black",
+  padding: 8,
+};
 
-const seedVendors: Vendor[] = [
-  { id: 'V1', name: 'Williams Concrete', trade: 'Concrete' },
-  { id: 'V2', name: 'Schwickerts', trade: 'HVAC' },
-  { id: 'V3', name: 'Weichmann', trade: 'Painting' },
-  { id: 'V4', name: 'MRI', trade: 'Plumbing' },
-  { id: 'V5', name: 'BC Electric', trade: 'Electric' },
-  { id: 'V6', name: 'KBM', trade: 'Flooring' },
-  { id: 'V7', name: '7-Systems', trade: 'Construction' },
-  { id: 'V8', name: 'Hunt Plumbing', trade: 'Plumbing' },
-]
-
-const seedEstimates: Estimate[] = [
-  { id: uid(), projectId: seedProject.id, trade: 'Concrete', vendorId: 'V1', amount: 1800, quoteNo: '—', date: '2026-03-01' },
-
-  { id: uid(), projectId: seedProject.id, trade: 'HVAC', vendorId: 'V2', amount: 3285, quoteNo: '—', date: '2026-03-01' },
-
-  { id: uid(), projectId: seedProject.id, trade: 'Painting', vendorId: 'V3', amount: 3980, quoteNo: '—', date: '2026-03-01' },
-
-  { id: uid(), projectId: seedProject.id, trade: 'Plumbing', vendorId: 'V4', amount: 4345, quoteNo: '206', date: '2026-03-01' },
-  { id: uid(), projectId: seedProject.id, trade: 'Plumbing', vendorId: 'V8', amount: 5000, quoteNo: '—', date: '2026-03-02' },
-
-  { id: uid(), projectId: seedProject.id, trade: 'Electric', vendorId: 'V5', amount: 8480, quoteNo: '—', date: '2026-03-02' },
-
-  { id: uid(), projectId: seedProject.id, trade: 'Flooring', vendorId: 'V6', amount: 14275, quoteNo: '—', date: '2026-03-02' },
-
-  { id: uid(), projectId: seedProject.id, trade: 'Construction', vendorId: 'V7', amount: 47577, quoteNo: '—', date: '2026-03-03' },
-]
-
-const seedSchedules: TradeSchedule[] = TRADES.map((t) => ({
-  projectId: seedProject.id,
-  trade: t,
-  status: 'Not started',
-}))
-
-type Tab = 'Compare' | 'Estimates' | 'Awards' | 'Vendors' | 'Settings'
+const tableCellStyle: React.CSSProperties = {
+  padding: 8,
+  borderBottom: "1px solid #ddd",
+  color: "black",
+  verticalAlign: "top",
+};
 
 export default function App() {
-  const [project, setProject] = useState<Project>(seedProject)
-  const [vendors, setVendors] = useState<Vendor[]>(seedVendors)
-  const [estimates, setEstimates] = useState<Estimate[]>(seedEstimates)
-  const [awards, setAwards] = useState<Award[]>([])
-  const [schedules, setSchedules] = useState<TradeSchedule[]>(seedSchedules)
-  const [tab, setTab] = useState<Tab>('Compare')
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
 
-  const vendorById = useMemo(() => new Map(vendors.map((v) => [v.id, v])), [vendors])
+  const [authMode, setAuthMode] = useState<AuthMode>("signin");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
 
-  const estimatesByTrade = useMemo(() => {
-    const map = new Map<Trade, Estimate[]>()
-    for (const t of TRADES) map.set(t, [])
-    for (const e of estimates.filter((x) => x.projectId === project.id)) {
-      map.get(e.trade)!.push(e)
-    }
-    for (const t of TRADES) map.get(t)!.sort((a, b) => a.amount - b.amount)
-    return map
-  }, [estimates, project.id])
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
-  const awardByTrade = useMemo(() => {
-    const map = new Map<Trade, Award>()
-    for (const a of awards.filter((x) => x.projectId === project.id)) map.set(a.trade, a)
-    return map
-  }, [awards, project.id])
+  const [projectName, setProjectName] = useState("");
+  const [projectStartDate, setProjectStartDate] = useState("");
+  const [projectEndDate, setProjectEndDate] = useState("");
 
-  const scheduleByTrade = useMemo(() => {
-    const map = new Map<Trade, TradeSchedule>()
-    for (const s of schedules.filter((x) => x.projectId === project.id)) map.set(s.trade, s)
-    return map
-  }, [schedules, project.id])
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
 
-  const awardedBaseCost = useMemo(() => {
-    let sum = 0
-    for (const a of awards.filter((x) => x.projectId === project.id)) sum += a.amount
-    return sum
-  }, [awards, project.id])
+  const [allProjectEstimates, setAllProjectEstimates] = useState<VendorEstimate[]>([]);
+  const [editingEstimates, setEditingEstimates] = useState<Record<string, EstimateDraft>>({});
 
-  const forecastBaseCost = useMemo(() => {
-    let sum = 0
-    for (const t of TRADES) {
-      const a = awardByTrade.get(t)
-      if (a) sum += a.amount
-      else {
-        const list = estimatesByTrade.get(t) || []
-        if (list.length) sum += list[0].amount
+  const [vendorName, setVendorName] = useState("");
+  const [estimateAmount, setEstimateAmount] = useState("");
+  const [estimateNotes, setEstimateNotes] = useState("");
+  const [receivedAt, setReceivedAt] = useState("");
+
+  const [shareEmail, setShareEmail] = useState("");
+  const [shareRole, setShareRole] = useState<ShareRole>("viewer");
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
+  const [memberRoleDrafts, setMemberRoleDrafts] = useState<Record<string, ShareRole>>({});
+
+  useEffect(() => {
+    async function loadSession() {
+      const { data, error } = await supabase.auth.getSession();
+
+      if (error) {
+        setMessage(`Session error: ${error.message}`);
+        return;
+      }
+
+      if (data.session?.user) {
+        setUserId(data.session.user.id);
+        setUserEmail(data.session.user.email ?? null);
       }
     }
-    return sum
-  }, [awardByTrade, estimatesByTrade])
 
-  const baseCost = project.feeBasis === 'awarded' ? awardedBaseCost : forecastBaseCost
-  const feeAmount = baseCost * project.feePercent
-  const totalWithFee = baseCost + feeAmount
+    loadSession();
 
-  const addEstimate = (partial: Omit<Estimate, 'id' | 'projectId'>) => {
-    setEstimates((prev) => [{ id: uid(), projectId: project.id, ...partial }, ...prev])
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUserId(session.user.id);
+        setUserEmail(session.user.email ?? null);
+      } else {
+        setUserId(null);
+        setUserEmail(null);
+        setProjects([]);
+        setTrades([]);
+        setAllProjectEstimates([]);
+        setSelectedProjectId(null);
+        setSelectedTradeId(null);
+        setEditingEstimates({});
+        setProjectMembers([]);
+        setMemberRoleDrafts({});
+      }
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (userId) {
+      loadProjects(userId);
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    if (selectedProjectId) {
+      loadTrades(selectedProjectId);
+      loadProjectMembers(selectedProjectId);
+    } else {
+      setTrades([]);
+      setSelectedTradeId(null);
+      setAllProjectEstimates([]);
+      setProjectMembers([]);
+      setMemberRoleDrafts({});
+    }
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (trades.length > 0) {
+      loadAllEstimatesForProjectTrades(trades);
+      setSelectedTradeId((prev) => {
+        const stillExists = trades.some((trade) => trade.id === prev);
+        return stillExists ? prev : trades[0].id;
+      });
+    } else {
+      setAllProjectEstimates([]);
+      setSelectedTradeId(null);
+    }
+  }, [trades]);
+
+  useEffect(() => {
+    const next: Record<string, EstimateDraft> = {};
+    for (const estimate of allProjectEstimates) {
+      next[estimate.id] = {
+        vendor_name: estimate.vendor_name,
+        estimate_amount: String(estimate.estimate_amount),
+        received_at: estimate.received_at ?? "",
+        notes: estimate.notes ?? "",
+        status: estimate.status,
+      };
+    }
+    setEditingEstimates(next);
+  }, [allProjectEstimates]);
+
+  useEffect(() => {
+    const next: Record<string, ShareRole> = {};
+    for (const member of projectMembers) {
+      if (member.role === "viewer" || member.role === "editor") {
+        next[member.user_id] = member.role;
+      }
+    }
+    setMemberRoleDrafts(next);
+  }, [projectMembers]);
+
+  async function loadProjects(currentUserId: string) {
+    const { data: ownedProjects, error: ownedError } = await supabase
+      .from("projects")
+      .select("*")
+      .eq("owner_id", currentUserId)
+      .order("created_at", { ascending: false });
+
+    if (ownedError) {
+      setMessage(`Load owned projects error: ${ownedError.message}`);
+      return;
+    }
+
+    const { data: memberships, error: memberError } = await supabase
+      .from("project_members")
+      .select("project_id")
+      .eq("user_id", currentUserId);
+
+    if (memberError) {
+      setMessage(`Load memberships error: ${memberError.message}`);
+      return;
+    }
+
+    const sharedProjectIds = (memberships || [])
+      .map((m) => m.project_id)
+      .filter((id) => id && !(ownedProjects || []).some((p) => p.id === id));
+
+    let sharedProjects: Project[] = [];
+
+    if (sharedProjectIds.length > 0) {
+      const { data: sharedData, error: sharedError } = await supabase
+        .from("projects")
+        .select("*")
+        .in("id", sharedProjectIds)
+        .order("created_at", { ascending: false });
+
+      if (sharedError) {
+        setMessage(`Load shared projects error: ${sharedError.message}`);
+        return;
+      }
+
+      sharedProjects = (sharedData || []) as Project[];
+    }
+
+    const combined = [...(ownedProjects || []), ...sharedProjects];
+
+    combined.sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    setProjects(combined);
+
+    if (combined.length > 0) {
+      setSelectedProjectId((prev) => prev ?? combined[0].id);
+    } else {
+      setSelectedProjectId(null);
+    }
   }
 
-  const upsertAward = (trade: Trade, vendorId: string, amount: number) => {
-    setAwards((prev) => {
-      const existing = prev.find((x) => x.projectId === project.id && x.trade === trade)
-      if (!existing) return [{ id: uid(), projectId: project.id, trade, vendorId, amount }, ...prev]
-      return prev.map((x) => (x.id === existing.id ? { ...x, vendorId, amount } : x))
-    })
+  async function loadTrades(projectId: string) {
+    const { data, error } = await supabase
+      .from("trades")
+      .select("*")
+      .eq("project_id", projectId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setMessage(`Load trades error: ${error.message}`);
+      return;
+    }
+
+    setTrades((data || []) as Trade[]);
   }
 
-  const removeAward = (trade: Trade) => {
-    setAwards((prev) => prev.filter((x) => !(x.projectId === project.id && x.trade === trade)))
+  async function loadProjectMembers(projectId: string) {
+    const { data: membersData, error: membersError } = await supabase
+      .from("project_members")
+      .select("project_id,user_id,role")
+      .eq("project_id", projectId);
+
+    if (membersError) {
+      setMessage(`Load members error: ${membersError.message}`);
+      return;
+    }
+
+    const members = (membersData || []) as ProjectMember[];
+
+    if (members.length === 0) {
+      setProjectMembers([]);
+      return;
+    }
+
+    const userIds = members.map((m) => m.user_id);
+
+    const { data: profilesData, error: profilesError } = await supabase
+      .from("profiles")
+      .select("id,email")
+      .in("id", userIds);
+
+    if (profilesError) {
+      setMessage(`Load profiles error: ${profilesError.message}`);
+      return;
+    }
+
+    const emailMap = new Map(
+      (profilesData || []).map((p: any) => [p.id, p.email])
+    );
+
+    const merged = members.map((member) => ({
+      ...member,
+      profiles: {
+        email: emailMap.get(member.user_id) || null,
+      },
+    }));
+
+    setProjectMembers(merged);
   }
 
-  const updateSchedule = (trade: Trade, patch: Partial<TradeSchedule>) => {
-    setSchedules((prev) =>
-      prev.map((s) => (s.projectId === project.id && s.trade === trade ? { ...s, ...patch } : s)),
-    )
+  async function loadAllEstimatesForProjectTrades(projectTrades: Trade[]) {
+    const tradeIds = projectTrades.map((trade) => trade.id);
+
+    if (tradeIds.length === 0) {
+      setAllProjectEstimates([]);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("vendor_estimates")
+      .select("*")
+      .in("trade_id", tradeIds)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      setMessage(`Load estimates error: ${error.message}`);
+      return;
+    }
+
+    setAllProjectEstimates((data || []) as VendorEstimate[]);
+  }
+
+  async function refreshCurrentProjectData() {
+    if (!selectedProjectId) return;
+    await loadTrades(selectedProjectId);
+    await loadProjectMembers(selectedProjectId);
+  }
+
+  async function refreshAllProjects() {
+    if (userId) {
+      await loadProjects(userId);
+    }
+  }
+
+  async function handleAuthSubmit() {
+    setAuthLoading(true);
+    setMessage("");
+
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setMessage("Enter both email and password.");
+      setAuthLoading(false);
+      return;
+    }
+
+    if (authMode === "signup") {
+      const { error } = await supabase.auth.signUp({
+        email: authEmail.trim().toLowerCase(),
+        password: authPassword,
+      });
+
+      if (error) {
+        setMessage(`Sign-up error: ${error.message}`);
+      } else {
+        setMessage("Account created. You can now sign in.");
+        setAuthMode("signin");
+      }
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({
+        email: authEmail.trim().toLowerCase(),
+        password: authPassword,
+      });
+
+      if (error) {
+        setMessage(`Sign-in error: ${error.message}`);
+      } else {
+        setMessage("Signed in.");
+        setAuthEmail("");
+        setAuthPassword("");
+      }
+    }
+
+    setAuthLoading(false);
+  }
+
+  async function handleSignOut() {
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      setMessage(`Sign-out error: ${error.message}`);
+    } else {
+      setMessage("Signed out.");
+    }
+  }
+
+  async function handleCreateProject() {
+    if (!userId || !projectName.trim()) return;
+
+    const { data: project, error: projectError } = await supabase
+      .from("projects")
+      .insert({
+        name: projectName.trim(),
+        start_date: projectStartDate || null,
+        end_date: projectEndDate || null,
+        owner_id: userId,
+      })
+      .select()
+      .single();
+
+    if (projectError || !project) {
+      setMessage(`Create project error: ${projectError?.message || "Unknown error"}`);
+      return;
+    }
+
+    const { error: memberError } = await supabase.from("project_members").upsert({
+      project_id: project.id,
+      user_id: userId,
+      role: "owner",
+    });
+
+    if (memberError) {
+      setMessage(`Owner membership error: ${memberError.message}`);
+      return;
+    }
+
+    const tradeRows = COMMON_TRADES.map((name) => ({
+      project_id: project.id,
+      name,
+    }));
+
+    const { error: tradesError } = await supabase.from("trades").insert(tradeRows);
+
+    if (tradesError) {
+      setMessage(`Project created, but trades failed: ${tradesError.message}`);
+      await refreshAllProjects();
+      setSelectedProjectId(project.id);
+      return;
+    }
+
+    setProjectName("");
+    setProjectStartDate("");
+    setProjectEndDate("");
+    setMessage("Project created with default trades.");
+
+    await refreshAllProjects();
+    setSelectedProjectId(project.id);
+  }
+
+  async function handleCreateEstimate() {
+    if (!canEdit) {
+      setMessage("You have viewer access and cannot make changes.");
+      return;
+    }
+
+    if (!selectedTradeId || !vendorName.trim() || !estimateAmount.trim()) return;
+
+    const amount = Number(estimateAmount);
+    if (Number.isNaN(amount)) {
+      setMessage("Estimate amount must be a number.");
+      return;
+    }
+
+    const { error } = await supabase.from("vendor_estimates").insert({
+      trade_id: selectedTradeId,
+      vendor_name: vendorName.trim(),
+      estimate_amount: amount,
+      notes: estimateNotes.trim() || null,
+      received_at: receivedAt || null,
+      status: "pending",
+      file_path: null,
+    });
+
+    if (error) {
+      setMessage(`Create estimate error: ${error.message}`);
+      return;
+    }
+
+    setVendorName("");
+    setEstimateAmount("");
+    setEstimateNotes("");
+    setReceivedAt("");
+    setMessage("Vendor estimate added.");
+    await refreshCurrentProjectData();
+  }
+
+  async function handleShareProject() {
+    if (!selectedProjectId || !shareEmail.trim()) return;
+
+    if (!isOwner) {
+      setMessage("Only the project owner can share this project.");
+      return;
+    }
+
+    const normalizedEmail = shareEmail.trim().toLowerCase();
+
+    const { data: profile, error: profileError } = await supabase
+      .from("profiles")
+      .select("id,email")
+      .eq("email", normalizedEmail)
+      .single();
+
+    if (profileError || !profile) {
+      setMessage("That user must create an account first.");
+      return;
+    }
+
+    const { error } = await supabase.from("project_members").upsert({
+      project_id: selectedProjectId,
+      user_id: profile.id,
+      role: shareRole,
+    });
+
+    if (error) {
+      setMessage(`Share error: ${error.message}`);
+      return;
+    }
+
+    setShareEmail("");
+    setMessage(`Project shared with ${profile.email} as ${shareRole}.`);
+    await loadProjectMembers(selectedProjectId);
+    await refreshAllProjects();
+  }
+
+  async function handleUpdateMemberRole(memberUserId: string, newRole: ShareRole) {
+    if (!selectedProjectId) return;
+
+    if (!isOwner) {
+      setMessage("Only the project owner can change member roles.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("project_members")
+      .update({ role: newRole })
+      .eq("project_id", selectedProjectId)
+      .eq("user_id", memberUserId);
+
+    if (error) {
+      setMessage(`Update role error: ${error.message}`);
+      return;
+    }
+
+    setMessage(`Member role updated to ${newRole}.`);
+    await loadProjectMembers(selectedProjectId);
+  }
+
+  async function handleRemoveMember(memberUserId: string) {
+    if (!selectedProjectId) return;
+
+    if (!isOwner) {
+      setMessage("Only the project owner can remove access.");
+      return;
+    }
+
+    if (memberUserId === userId) {
+      setMessage("You cannot remove your own owner access here.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("project_members")
+      .delete()
+      .eq("project_id", selectedProjectId)
+      .eq("user_id", memberUserId);
+
+    if (error) {
+      setMessage(`Remove access error: ${error.message}`);
+      return;
+    }
+
+    setMessage("Access removed.");
+    await loadProjectMembers(selectedProjectId);
+    await refreshAllProjects();
+  }
+
+  async function handleUploadQuote(estimateId: string, file: File | null) {
+    if (!canEdit) {
+      setMessage("You have viewer access and cannot make changes.");
+      return;
+    }
+
+    if (!file) return;
+
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filePath = `${estimateId}/${Date.now()}_${safeName}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("vendor-quotes")
+      .upload(filePath, file, { upsert: true });
+
+    if (uploadError) {
+      setMessage(`Upload error: ${uploadError.message}`);
+      return;
+    }
+
+    const { error: updateError } = await supabase
+      .from("vendor_estimates")
+      .update({ file_path: filePath })
+      .eq("id", estimateId);
+
+    if (updateError) {
+      setMessage(`Database save error: ${updateError.message}`);
+      return;
+    }
+
+    setMessage("Quote uploaded successfully.");
+    await refreshCurrentProjectData();
+  }
+
+  function getQuoteUrl(filePath: string | null) {
+    if (!filePath) return null;
+    const { data } = supabase.storage.from("vendor-quotes").getPublicUrl(filePath);
+    return data.publicUrl;
+  }
+
+  function updateEstimateDraft(
+    estimateId: string,
+    field: keyof EstimateDraft,
+    value: string
+  ) {
+    setEditingEstimates((prev) => ({
+      ...prev,
+      [estimateId]: {
+        ...prev[estimateId],
+        [field]: value,
+      },
+    }));
+  }
+
+  async function saveEstimateRow(estimateId: string, tradeId: string) {
+    if (!canEdit) {
+      setMessage("You have viewer access and cannot make changes.");
+      return;
+    }
+
+    const draft = editingEstimates[estimateId];
+    if (!draft) return;
+
+    const amount = Number(draft.estimate_amount);
+    if (Number.isNaN(amount)) {
+      setMessage("Estimate amount must be a number.");
+      return;
+    }
+
+    if (draft.status === "awarded") {
+      const { error: resetError } = await supabase
+        .from("vendor_estimates")
+        .update({
+          status: "pending",
+          awarded_at: null,
+        })
+        .eq("trade_id", tradeId)
+        .eq("status", "awarded")
+        .neq("id", estimateId);
+
+      if (resetError) {
+        setMessage(`Award reset error: ${resetError.message}`);
+        return;
+      }
+    }
+
+    const { error } = await supabase
+      .from("vendor_estimates")
+      .update({
+        vendor_name: draft.vendor_name.trim(),
+        estimate_amount: amount,
+        received_at: draft.received_at || null,
+        notes: draft.notes.trim() || null,
+        status: draft.status,
+        awarded_at: draft.status === "awarded" ? new Date().toISOString() : null,
+      })
+      .eq("id", estimateId);
+
+    if (error) {
+      setMessage(`Save row error: ${error.message}`);
+      return;
+    }
+
+    setMessage("Estimate updated.");
+    await refreshCurrentProjectData();
+  }
+
+  async function deleteEstimateRow(estimateId: string) {
+    if (!canEdit) {
+      setMessage("You have viewer access and cannot make changes.");
+      return;
+    }
+
+    const estimate = allProjectEstimates.find((e) => e.id === estimateId);
+
+    if (estimate?.file_path) {
+      await supabase.storage.from("vendor-quotes").remove([estimate.file_path]);
+    }
+
+    const { error } = await supabase
+      .from("vendor_estimates")
+      .delete()
+      .eq("id", estimateId);
+
+    if (error) {
+      setMessage(`Delete row error: ${error.message}`);
+      return;
+    }
+
+    setMessage("Estimate deleted.");
+    await refreshCurrentProjectData();
+  }
+
+  async function awardLowestForTrade(tradeId: string) {
+    if (!canEdit) {
+      setMessage("You have viewer access and cannot make changes.");
+      return;
+    }
+
+    const estimatesForTrade = allProjectEstimates.filter(
+      (estimate) => estimate.trade_id === tradeId
+    );
+
+    if (estimatesForTrade.length === 0) {
+      setMessage("No estimates available to award.");
+      return;
+    }
+
+    const lowest = estimatesForTrade.reduce((lowest, current) => {
+      return Number(current.estimate_amount) < Number(lowest.estimate_amount)
+        ? current
+        : lowest;
+    }, estimatesForTrade[0]);
+
+    const { error: resetError } = await supabase
+      .from("vendor_estimates")
+      .update({
+        status: "pending",
+        awarded_at: null,
+      })
+      .eq("trade_id", tradeId)
+      .eq("status", "awarded")
+      .neq("id", lowest.id);
+
+    if (resetError) {
+      setMessage(`Award lowest reset error: ${resetError.message}`);
+      return;
+    }
+
+    const { error } = await supabase
+      .from("vendor_estimates")
+      .update({
+        status: "awarded",
+        awarded_at: new Date().toISOString(),
+      })
+      .eq("id", lowest.id);
+
+    if (error) {
+      setMessage(`Award lowest error: ${error.message}`);
+      return;
+    }
+
+    setMessage(`Awarded lowest estimate from ${lowest.vendor_name}.`);
+    await refreshCurrentProjectData();
+  }
+
+  function handlePrintSummary() {
+    window.print();
+  }
+
+  const selectedProject =
+    projects.find((project) => project.id === selectedProjectId) || null;
+
+  const selectedTrade =
+    trades.find((trade) => trade.id === selectedTradeId) || null;
+
+  const currentMembership =
+    projectMembers.find((member) => member.user_id === userId) || null;
+
+  const currentUserRole: ProjectRole = selectedProject
+    ? selectedProject.owner_id === userId
+      ? "owner"
+      : currentMembership?.role ?? "viewer"
+    : "viewer";
+
+  const isOwner = currentUserRole === "owner";
+  const canEdit = currentUserRole === "owner" || currentUserRole === "editor";
+
+  const currentTradeEstimates = useMemo(() => {
+    if (!selectedTradeId) return [];
+    return allProjectEstimates.filter((estimate) => estimate.trade_id === selectedTradeId);
+  }, [allProjectEstimates, selectedTradeId]);
+
+  const lowestEstimate = useMemo(() => {
+    if (currentTradeEstimates.length === 0) return null;
+
+    return currentTradeEstimates.reduce((lowest, current) => {
+      return Number(current.estimate_amount) < Number(lowest.estimate_amount)
+        ? current
+        : lowest;
+    }, currentTradeEstimates[0]);
+  }, [currentTradeEstimates]);
+
+  const awardedEstimate =
+    currentTradeEstimates.find((estimate) => estimate.status === "awarded") || null;
+
+  const tradeAwardMap = useMemo(() => {
+    const map: Record<string, VendorEstimate> = {};
+
+    for (const estimate of allProjectEstimates) {
+      if (estimate.status === "awarded") {
+        map[estimate.trade_id] = estimate;
+      }
+    }
+
+    return map;
+  }, [allProjectEstimates]);
+
+  const tradeLowestMap = useMemo(() => {
+    const map: Record<string, VendorEstimate> = {};
+
+    for (const trade of trades) {
+      const estimatesForTrade = allProjectEstimates.filter(
+        (estimate) => estimate.trade_id === trade.id
+      );
+
+      if (estimatesForTrade.length > 0) {
+        map[trade.id] = estimatesForTrade.reduce((lowest, current) => {
+          return Number(current.estimate_amount) < Number(lowest.estimate_amount)
+            ? current
+            : lowest;
+        }, estimatesForTrade[0]);
+      }
+    }
+
+    return map;
+  }, [allProjectEstimates, trades]);
+
+  const summaryRows = useMemo(() => {
+    return trades.map((trade) => {
+      const lowest = tradeLowestMap[trade.id];
+      const awarded = tradeAwardMap[trade.id];
+      const difference =
+        lowest && awarded
+          ? Number(awarded.estimate_amount) - Number(lowest.estimate_amount)
+          : null;
+
+      return {
+        tradeName: trade.name,
+        lowest,
+        awarded,
+        difference,
+      };
+    });
+  }, [trades, tradeLowestMap, tradeAwardMap]);
+
+  const projectAwardedSubtotal = useMemo(() => {
+    return Object.values(tradeAwardMap).reduce((sum, estimate) => {
+      return sum + Number(estimate.estimate_amount);
+    }, 0);
+  }, [tradeAwardMap]);
+
+  const projectLowestSubtotal = useMemo(() => {
+    return Object.values(tradeLowestMap).reduce((sum, estimate) => {
+      return sum + Number(estimate.estimate_amount);
+    }, 0);
+  }, [tradeLowestMap]);
+
+  const projectDifferenceFromLowest = projectAwardedSubtotal - projectLowestSubtotal;
+  const projectManagementFee = projectAwardedSubtotal * 0.05;
+  const projectFinalTotal = projectAwardedSubtotal + projectManagementFee;
+
+  const currentTradeDifferenceFromLowest =
+    awardedEstimate && lowestEstimate
+      ? Number(awardedEstimate.estimate_amount) - Number(lowestEstimate.estimate_amount)
+      : 0;
+
+  const currentTradeManagementFee = awardedEstimate
+    ? Number(awardedEstimate.estimate_amount) * 0.05
+    : 0;
+
+  const currentTradeFinalTotal = awardedEstimate
+    ? Number(awardedEstimate.estimate_amount) + currentTradeManagementFee
+    : 0;
+
+  if (!userEmail) {
+    return (
+      <div style={{ padding: 40, maxWidth: 420, color: "black", background: "white" }}>
+        <h1>BidBoard</h1>
+        <p>{authMode === "signin" ? "Sign in to your account" : "Create your account"}</p>
+
+        <div style={{ display: "grid", gap: 12 }}>
+          <input
+            type="email"
+            placeholder="Email"
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+            style={{ ...inputStyle, padding: 10 }}
+          />
+
+          <input
+            type="password"
+            placeholder="Password"
+            value={authPassword}
+            onChange={(e) => setAuthPassword(e.target.value)}
+            style={{ ...inputStyle, padding: 10 }}
+          />
+
+          <button onClick={handleAuthSubmit} disabled={authLoading}>
+            {authLoading
+              ? "Please wait..."
+              : authMode === "signin"
+              ? "Sign In"
+              : "Create Account"}
+          </button>
+
+          <button
+            onClick={() => setAuthMode(authMode === "signin" ? "signup" : "signin")}
+            type="button"
+          >
+            {authMode === "signin"
+              ? "Need an account? Switch to Sign Up"
+              : "Already have an account? Switch to Sign In"}
+          </button>
+        </div>
+
+        <p style={{ marginTop: 20 }}>{message}</p>
+      </div>
+    );
   }
 
   return (
-    <div className="container">
-      <div className="flex-between" style={{ marginBottom: 14 }}>
-        <div>
-          <h1>BidBoard</h1>
-          <small>
-            Project <span className="pill mono">{project.id}</span> • {project.address} •{' '}
-            <span className="pill">{project.status}</span>
-          </small>
+    <div style={{ padding: 40, maxWidth: 1200, color: "black", background: "white" }}>
+      <style>{`
+        @media print {
+          body { background: white !important; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      <h1>BidBoard</h1>
+      <p>Signed in as {userEmail}</p>
+      <button className="no-print" onClick={handleSignOut}>Sign out</button>
+
+      <hr style={{ margin: "24px 0" }} className="no-print" />
+
+      <div className="no-print">
+        <h2>Create Project</h2>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+          <input
+            type="text"
+            placeholder="Project name"
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+            style={{ ...inputStyle, padding: 10, width: 220 }}
+          />
+          <input
+            type="date"
+            value={projectStartDate}
+            onChange={(e) => setProjectStartDate(e.target.value)}
+            style={{ ...inputStyle, padding: 10 }}
+          />
+          <input
+            type="date"
+            value={projectEndDate}
+            onChange={(e) => setProjectEndDate(e.target.value)}
+            style={{ ...inputStyle, padding: 10 }}
+          />
+          <button onClick={handleCreateProject}>Create Project</button>
         </div>
-        <div className="row" style={{ alignItems: 'stretch' }}>
-          <div className="card" style={{ minWidth: 320 }}>
-            <div className="kpi">
-              <div>
-                <small>Base Cost ({project.feeBasis === 'awarded' ? 'Awarded' : 'Forecast'})</small>
-                <div className="value mono">{money(baseCost)}</div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <small>Fee ({Math.round(project.feePercent * 100)}%)</small>
-                <div className="value mono">{money(feeAmount)}</div>
-              </div>
-            </div>
-            <hr />
-            <div className="flex-between">
-              <div>
-                <small>Total w/ Fee</small>
-                <div className="value mono">{money(totalWithFee)}</div>
-              </div>
-              <div style={{ width: 160 }}>
-                <select
-                  value={project.feeBasis}
-                  onChange={(e) => setProject((p) => ({ ...p, feeBasis: e.target.value as FeeBasis }))}
-                  aria-label="Fee basis"
+
+        <p style={{ marginTop: -10, marginBottom: 24 }}>
+          New projects auto-create {COMMON_TRADES.length} common construction trades.
+        </p>
+
+        <h2>Your Projects</h2>
+        {projects.length === 0 ? (
+          <p>No projects yet.</p>
+        ) : (
+          <div style={{ display: "grid", gap: 12, marginBottom: 24 }}>
+            {projects.map((project) => {
+              const isSelected = project.id === selectedProjectId;
+
+              return (
+                <div
+                  key={project.id}
+                  style={{
+                    border: isSelected ? "2px solid black" : "1px solid #ccc",
+                    borderRadius: 8,
+                    padding: 12,
+                    background: isSelected ? "#f5f5f5" : "white",
+                  }}
                 >
-                  <option value="awarded">Awarded</option>
-                  <option value="forecast">Forecast</option>
-                </select>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="row" style={{ marginBottom: 14 }}>
-        {(['Compare', 'Estimates', 'Awards', 'Vendors', 'Settings'] as Tab[]).map((t) => (
-          <div key={t} style={{ flex: '0 0 140px' }}>
-            <button className={tab === t ? 'primary' : ''} onClick={() => setTab(t)}>
-              {t}
-            </button>
-          </div>
-        ))}
-      </div>
-
-      {tab === 'Compare' && (
-        <CompareView
-          vendorById={vendorById}
-          estimatesByTrade={estimatesByTrade}
-          awardByTrade={awardByTrade}
-          scheduleByTrade={scheduleByTrade}
-          onUpsertAward={upsertAward}
-          onRemoveAward={removeAward}
-          onUpdateSchedule={updateSchedule}
-        />
-      )}
-
-      {tab === 'Estimates' && (
-        <EstimatesView
-          vendors={vendors}
-          vendorById={vendorById}
-          estimates={estimates.filter((e) => e.projectId === project.id)}
-          onAdd={addEstimate}
-        />
-      )}
-
-      {tab === 'Awards' && (
-        <AwardsView
-          awards={awards.filter((a) => a.projectId === project.id)}
-          vendorById={vendorById}
-          scheduleByTrade={scheduleByTrade}
-          onRemoveAward={removeAward}
-        />
-      )}
-
-      {tab === 'Vendors' && <VendorsView vendors={vendors} setVendors={setVendors} />}
-
-      {tab === 'Settings' && <SettingsView project={project} setProject={setProject} />}
-
-      <div style={{ marginTop: 18 }}>
-        <small>Prototype build: local-only data. Next step is adding login + database + Excel import.</small>
-      </div>
-    </div>
-  )
-}
-
-function CompareView(props: {
-  vendorById: Map<string, Vendor>
-  estimatesByTrade: Map<Trade, Estimate[]>
-  awardByTrade: Map<Trade, Award>
-  scheduleByTrade: Map<Trade, TradeSchedule>
-  onUpsertAward: (trade: Trade, vendorId: string, amount: number) => void
-  onRemoveAward: (trade: Trade) => void
-  onUpdateSchedule: (trade: Trade, patch: Partial<TradeSchedule>) => void
-}) {
-  const [openTrade, setOpenTrade] = useState<Trade | null>('Concrete')
-
-  return (
-    <div className="card">
-      <h2>Compare bids by trade</h2>
-      <small>See every estimate per trade, schedule dates, and award winners.</small>
-
-      <div style={{ marginTop: 12 }}>
-        {TRADES.map((trade) => {
-          const list = props.estimatesByTrade.get(trade) || []
-          const award = props.awardByTrade.get(trade)
-          const sched = props.scheduleByTrade.get(trade)
-
-          const min = list.length ? list[0].amount : undefined
-          const max = list.length ? list[list.length - 1].amount : undefined
-          const spread = min != null && max != null ? max - min : undefined
-
-          const isOpen = openTrade === trade
-          return (
-            <div key={trade} style={{ marginBottom: 10 }}>
-              <button onClick={() => setOpenTrade(isOpen ? null : trade)} className={isOpen ? 'primary' : ''}>
-                <div className="flex-between" style={{ width: '100%' }}>
-                  <div className="flex" style={{ gap: 12 }}>
-                    <strong>{trade}</strong>
-                    <span className="pill">{list.length} bids</span>
-                    {award && (
-                      <span className="pill">Awarded: {props.vendorById.get(award.vendorId)?.name ?? '—'}</span>
-                    )}
+                  <strong>{project.name}</strong>
+                  <div style={{ fontSize: 12, marginTop: 6 }}>
+                    Start: {project.start_date || "N/A"}
                   </div>
-                  <div className="flex" style={{ gap: 12 }}>
-                    <span className="mono">{min != null ? `Low ${money(min)}` : 'No bids yet'}</span>
-                    <span className="mono" style={{ opacity: 0.75 }}>
-                      {spread != null ? `Spread ${money(spread)}` : ''}
-                    </span>
+                  <div style={{ fontSize: 12, marginTop: 4 }}>
+                    End: {project.end_date || "N/A"}
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <button onClick={() => setSelectedProjectId(project.id)}>
+                      {isSelected ? "Current Project" : "Open Project"}
+                    </button>
                   </div>
                 </div>
-              </button>
-
-              {isOpen && (
-                <div className="card" style={{ marginTop: 10 }}>
-                  <div className="row">
-                    <div className="col">
-                      <h3>Estimates</h3>
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Vendor</th>
-                            <th>Total</th>
-                            <th>Quote #</th>
-                            <th>Date</th>
-                            <th>Notes</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {list.map((e) => (
-                            <tr key={e.id}>
-                              <td>{props.vendorById.get(e.vendorId)?.name ?? '—'}</td>
-                              <td className="mono">{money(e.amount)}</td>
-                              <td className="mono">{e.quoteNo ?? ''}</td>
-                              <td className="mono">{e.date ?? ''}</td>
-                              <td>{e.notes ?? ''}</td>
-                            </tr>
-                          ))}
-                          {!list.length && (
-                            <tr>
-                              <td colSpan={5}><small>No estimates for this trade yet.</small></td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-
-                      <div style={{ marginTop: 10 }} className="row">
-                        <div className="col">
-                          <button
-                            className="primary"
-                            disabled={!list.length}
-                            onClick={() => {
-                              const winner = list[0]
-                              props.onUpsertAward(trade, winner.vendorId, winner.amount)
-                            }}
-                          >
-                            Award lowest bid
-                          </button>
-                        </div>
-                        <div className="col">
-                          <button className="danger" disabled={!award} onClick={() => props.onRemoveAward(trade)}>
-                            Undo award
-                          </button>
-                        </div>
-                      </div>
-
-                      {award && (
-                        <div style={{ marginTop: 10 }}>
-                          <small>
-                            Awarded to <strong>{props.vendorById.get(award.vendorId)?.name ?? '—'}</strong> for{' '}
-                            <span className="mono">{money(award.amount)}</span>.
-                          </small>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="col">
-                      <h3>Trade schedule</h3>
-                      <div className="row">
-                        <div className="col">
-                          <small>Start date</small>
-                          <input
-                            type="date"
-                            value={sched?.startDate ?? ''}
-                            onChange={(e) => props.onUpdateSchedule(trade, { startDate: e.target.value })}
-                          />
-                        </div>
-                        <div className="col">
-                          <small>End date</small>
-                          <input
-                            type="date"
-                            value={sched?.endDate ?? ''}
-                            onChange={(e) => props.onUpdateSchedule(trade, { endDate: e.target.value })}
-                          />
-                        </div>
-                      </div>
-                      <div style={{ marginTop: 10 }}>
-                        <small>Status</small>
-                        <select
-                          value={sched?.status ?? 'Not started'}
-                          onChange={(e) => props.onUpdateSchedule(trade, { status: e.target.value as TradeSchedule['status'] })}
-                        >
-                          <option>Not started</option>
-                          <option>Scheduled</option>
-                          <option>In progress</option>
-                          <option>Complete</option>
-                        </select>
-                      </div>
-                      <div style={{ marginTop: 14 }}>
-                        <small>Tip: use <strong>Forecast</strong> fee basis to estimate totals before all trades are awarded.</small>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function EstimatesView(props: {
-  vendors: Vendor[]
-  vendorById: Map<string, Vendor>
-  estimates: Estimate[]
-  onAdd: (partial: Omit<Estimate, 'id' | 'projectId'>) => void
-}) {
-  const [trade, setTrade] = useState<Trade>('Plumbing')
-  const [vendorId, setVendorId] = useState<string>(() => props.vendors.find((v) => v.trade === 'Plumbing')?.id ?? props.vendors[0]?.id ?? '')
-  const [amount, setAmount] = useState<string>('0')
-  const [quoteNo, setQuoteNo] = useState<string>('')
-  const [date, setDate] = useState<string>('')
-  const [notes, setNotes] = useState<string>('')
-
-  const tradeVendors = useMemo(() => props.vendors.filter((v) => v.trade === trade), [props.vendors, trade])
-
-  React.useEffect(() => {
-    if (!tradeVendors.some((v) => v.id === vendorId)) setVendorId(tradeVendors[0]?.id ?? props.vendors[0]?.id ?? '')
-  }, [trade, tradeVendors, vendorId, props.vendors])
-
-  return (
-    <div className="row">
-      <div className="col">
-        <div className="card">
-          <h2>Add estimate</h2>
-          <div className="row">
-            <div className="col">
-              <small>Trade</small>
-              <select value={trade} onChange={(e) => setTrade(e.target.value as Trade)}>
-                {TRADES.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <div className="col">
-              <small>Vendor</small>
-              <select value={vendorId} onChange={(e) => setVendorId(e.target.value)}>
-                {tradeVendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-                {!tradeVendors.length && <option value="">No vendors for trade</option>}
-              </select>
-            </div>
+              );
+            })}
           </div>
+        )}
 
-          <div className="row" style={{ marginTop: 10 }}>
-            <div className="col">
-              <small>Total</small>
-              <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" />
-            </div>
-            <div className="col">
-              <small>Quote #</small>
-              <input value={quoteNo} onChange={(e) => setQuoteNo(e.target.value)} />
-            </div>
-            <div className="col">
-              <small>Date</small>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-            </div>
-          </div>
-
-          <div style={{ marginTop: 10 }}>
-            <small>Notes</small>
-            <textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <button
-              className="primary"
-              onClick={() => {
-                const n = Number(amount)
-                if (!Number.isFinite(n) || n <= 0 || !vendorId) return
-                props.onAdd({ trade, vendorId, amount: n, quoteNo: quoteNo || undefined, date: date || undefined, notes: notes || undefined })
-                setAmount('0'); setQuoteNo(''); setDate(''); setNotes('')
-              }}
-            >
-              Add estimate
-            </button>
-          </div>
-        </div>
+        <hr style={{ margin: "24px 0" }} />
       </div>
 
-      <div className="col" style={{ flex: '1 1 600px' }}>
-        <div className="card">
-          <h2>All estimates</h2>
-          <table>
+      <h2>Current Project</h2>
+      {selectedProject ? (
+        <>
+          <p>
+            <strong>{selectedProject.name}</strong>
+          </p>
+          <p>
+            {selectedProject.start_date || "No start date"} → {selectedProject.end_date || "No end date"}
+          </p>
+          <p className="no-print">
+            Your access: <strong>{currentUserRole}</strong>
+          </p>
+
+          <div className="no-print" style={{ marginBottom: 20 }}>
+            <button onClick={handlePrintSummary}>Print Summary</button>
+          </div>
+
+          <div
+            style={{
+              border: "2px solid #222",
+              borderRadius: 8,
+              padding: 16,
+              marginBottom: 24,
+              background: "#fafafa",
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>Project Award Summary</h3>
+            <p>Lowest possible subtotal: ${projectLowestSubtotal.toFixed(2)}</p>
+            <p>Awarded subtotal: ${projectAwardedSubtotal.toFixed(2)}</p>
+            <p>
+              Difference from lowest:{" "}
+              <strong>
+                {projectDifferenceFromLowest >= 0 ? "+" : "-"}$
+                {Math.abs(projectDifferenceFromLowest).toFixed(2)}
+              </strong>
+            </p>
+            <p>Management fee (5%): ${projectManagementFee.toFixed(2)}</p>
+            <p>
+              <strong>Final project total: ${projectFinalTotal.toFixed(2)}</strong>
+            </p>
+          </div>
+
+          <h3>Owner Summary</h3>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 24 }}>
             <thead>
               <tr>
-                <th>Trade</th><th>Vendor</th><th>Total</th><th>Quote #</th><th>Date</th><th>Notes</th>
+                <th style={tableHeaderStyle}>Trade</th>
+                <th style={tableHeaderStyle}>Lowest Bid</th>
+                <th style={tableHeaderStyle}>Awarded Bid</th>
+                <th style={tableHeaderStyle}>Difference</th>
               </tr>
             </thead>
             <tbody>
-              {props.estimates
-                .slice()
-                .sort((a, b) => (a.trade === b.trade ? a.amount - b.amount : a.trade.localeCompare(b.trade)))
-                .map((e) => (
-                  <tr key={e.id}>
-                    <td>{e.trade}</td>
-                    <td>{props.vendorById.get(e.vendorId)?.name ?? '—'}</td>
-                    <td className="mono">{money(e.amount)}</td>
-                    <td className="mono">{e.quoteNo ?? ''}</td>
-                    <td className="mono">{e.date ?? ''}</td>
-                    <td>{e.notes ?? ''}</td>
-                  </tr>
-                ))}
-              {!props.estimates.length && <tr><td colSpan={6}><small>No estimates yet.</small></td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function AwardsView(props: {
-  awards: Award[]
-  vendorById: Map<string, Vendor>
-  scheduleByTrade: Map<Trade, TradeSchedule>
-  onRemoveAward: (trade: Trade) => void
-}) {
-  const rows = props.awards.slice().sort((a, b) => a.trade.localeCompare(b.trade))
-  return (
-    <div className="card">
-      <h2>Awards</h2>
-      <small>All awarded trades for this project (with optional start/end dates).</small>
-      <div style={{ marginTop: 12 }}>
-        <table>
-          <thead>
-            <tr><th>Trade</th><th>Vendor</th><th>Award</th><th>Start</th><th>End</th><th></th></tr>
-          </thead>
-          <tbody>
-            {rows.map((a) => {
-              const sched = props.scheduleByTrade.get(a.trade)
-              return (
-                <tr key={a.id}>
-                  <td>{a.trade}</td>
-                  <td>{props.vendorById.get(a.vendorId)?.name ?? '—'}</td>
-                  <td className="mono">{money(a.amount)}</td>
-                  <td className="mono">{sched?.startDate ?? ''}</td>
-                  <td className="mono">{sched?.endDate ?? ''}</td>
-                  <td style={{ width: 140 }}><button className="danger" onClick={() => props.onRemoveAward(a.trade)}>Undo</button></td>
+              {summaryRows.map((row) => (
+                <tr key={row.tradeName}>
+                  <td style={tableCellStyle}>{row.tradeName}</td>
+                  <td style={tableCellStyle}>
+                    {row.lowest
+                      ? `${row.lowest.vendor_name} - $${Number(row.lowest.estimate_amount).toFixed(2)}`
+                      : "None"}
+                  </td>
+                  <td style={tableCellStyle}>
+                    {row.awarded
+                      ? `${row.awarded.vendor_name} - $${Number(row.awarded.estimate_amount).toFixed(2)}`
+                      : "None"}
+                  </td>
+                  <td style={tableCellStyle}>
+                    {row.difference !== null
+                      ? `${row.difference >= 0 ? "+" : "-"}$${Math.abs(row.difference).toFixed(2)}`
+                      : "N/A"}
+                  </td>
                 </tr>
-              )
-            })}
-            {!rows.length && <tr><td colSpan={6}><small>No awards yet. Go to Compare → “Award lowest bid”.</small></td></tr>}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-function VendorsView(props: { vendors: Vendor[]; setVendors: React.Dispatch<React.SetStateAction<Vendor[]>> }) {
-  const [name, setName] = useState('')
-  const [trade, setTrade] = useState<Trade>('Plumbing')
-  return (
-    <div className="row">
-      <div className="col">
-        <div className="card">
-          <h2>Add vendor</h2>
-          <small>Keep vendors tagged by trade for cleaner bid entry.</small>
-          <div style={{ marginTop: 10 }}>
-            <small>Name</small>
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <small>Trade</small>
-            <select value={trade} onChange={(e) => setTrade(e.target.value as Trade)}>
-              {TRADES.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          <div style={{ marginTop: 12 }}>
-            <button
-              className="primary"
-              onClick={() => {
-                if (!name.trim()) return
-                props.setVendors((prev) => [{ id: uid(), name: name.trim(), trade }, ...prev])
-                setName('')
-              }}
-            >
-              Add vendor
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div className="col" style={{ flex: '1 1 600px' }}>
-        <div className="card">
-          <h2>Vendors</h2>
-          <table>
-            <thead><tr><th>Vendor</th><th>Trade</th></tr></thead>
-            <tbody>
-              {props.vendors
-                .slice()
-                .sort((a, b) => (a.trade === b.trade ? a.name.localeCompare(b.name) : a.trade.localeCompare(b.trade)))
-                .map((v) => (
-                  <tr key={v.id}>
-                    <td>{v.name}</td>
-                    <td>{v.trade}</td>
-                  </tr>
-                ))}
+              ))}
             </tbody>
           </table>
-        </div>
-      </div>
-    </div>
-  )
-}
 
-function SettingsView(props: { project: Project; setProject: React.Dispatch<React.SetStateAction<Project>> }) {
-  return (
-    <div className="card">
-      <h2>Settings</h2>
-      <div className="row" style={{ marginTop: 10 }}>
-        <div className="col">
-          <small>Fee %</small>
-          <input
-            value={String(Math.round(props.project.feePercent * 100))}
-            onChange={(e) => {
-              const pct = Number(e.target.value)
-              if (!Number.isFinite(pct)) return
-              props.setProject((p) => ({ ...p, feePercent: Math.max(0, pct) / 100 }))
-            }}
-            inputMode="numeric"
-          />
-        </div>
-        <div className="col">
-          <small>Project status</small>
-          <select value={props.project.status} onChange={(e) => props.setProject((p) => ({ ...p, status: e.target.value as ProjectStatus }))}>
-            <option>Bidding</option><option>Awarding</option><option>Awarded</option>
-          </select>
-        </div>
-      </div>
-      <div style={{ marginTop: 12 }}>
-        <small>Fee is calculated on the <strong>project total</strong> (Awarded or Forecast), not per trade.</small>
-      </div>
+          <div className="no-print">
+            {isOwner && (
+              <>
+                <h3>Share Project</h3>
+                <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                  <input
+                    type="email"
+                    placeholder="User email"
+                    value={shareEmail}
+                    onChange={(e) => setShareEmail(e.target.value)}
+                    style={{ ...inputStyle, padding: 10, width: 240 }}
+                  />
+
+                  <select
+                    value={shareRole}
+                    onChange={(e) => setShareRole(e.target.value as ShareRole)}
+                    style={{ ...inputStyle, padding: 10 }}
+                  >
+                    <option value="viewer">viewer</option>
+                    <option value="editor">editor</option>
+                  </select>
+
+                  <button onClick={handleShareProject}>Share</button>
+                </div>
+              </>
+            )}
+
+            <h3>Project Members</h3>
+            {projectMembers.length === 0 ? (
+              <p>No members found.</p>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 24 }}>
+                <thead>
+                  <tr>
+                    <th style={tableHeaderStyle}>Email</th>
+                    <th style={tableHeaderStyle}>Role</th>
+                    <th style={tableHeaderStyle}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {projectMembers.map((member) => {
+                    const isSelf = member.user_id === userId;
+                    const memberEmail = member.profiles?.email || "Unknown";
+                    const isOwnerRow = member.role === "owner";
+
+                    return (
+                      <tr key={`${member.project_id}-${member.user_id}`}>
+                        <td style={tableCellStyle}>{memberEmail}</td>
+                        <td style={tableCellStyle}>
+                          {isOwnerRow ? (
+                            "owner"
+                          ) : (
+                            <select
+                              value={memberRoleDrafts[member.user_id] || "viewer"}
+                              onChange={(e) =>
+                                setMemberRoleDrafts((prev) => ({
+                                  ...prev,
+                                  [member.user_id]: e.target.value as ShareRole,
+                                }))
+                              }
+                              disabled={!isOwner}
+                              style={{ ...inputStyle, padding: 6 }}
+                            >
+                              <option value="viewer">viewer</option>
+                              <option value="editor">editor</option>
+                            </select>
+                          )}
+                        </td>
+                        <td style={tableCellStyle}>
+                          {isOwner && !isSelf && !isOwnerRow ? (
+                            <>
+                              <button
+                                onClick={() =>
+                                  handleUpdateMemberRole(
+                                    member.user_id,
+                                    memberRoleDrafts[member.user_id] || "viewer"
+                                  )
+                                }
+                              >
+                                Update Role
+                              </button>
+                              <button
+                                onClick={() => handleRemoveMember(member.user_id)}
+                                style={{ marginLeft: 8 }}
+                              >
+                                Remove Access
+                              </button>
+                            </>
+                          ) : isSelf ? (
+                            <span>You</span>
+                          ) : (
+                            <span>-</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {!canEdit && (
+              <div
+                style={{
+                  border: "1px solid #999",
+                  padding: 12,
+                  borderRadius: 8,
+                  background: "#f8f8f8",
+                  marginBottom: 20,
+                }}
+              >
+                You have viewer access. You can review this project, but you cannot make changes.
+              </div>
+            )}
+
+            <h3>Trade Summary</h3>
+            {trades.length === 0 ? (
+              <p>No trades yet.</p>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 24 }}>
+                <thead>
+                  <tr>
+                    <th style={tableHeaderStyle}>Trade</th>
+                    <th style={tableHeaderStyle}>Lowest</th>
+                    <th style={tableHeaderStyle}>Awarded</th>
+                    <th style={tableHeaderStyle}>Difference</th>
+                    <th style={tableHeaderStyle}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.map((trade) => {
+                    const lowest = tradeLowestMap[trade.id];
+                    const awarded = tradeAwardMap[trade.id];
+                    const tradeDifference =
+                      awarded && lowest
+                        ? Number(awarded.estimate_amount) - Number(lowest.estimate_amount)
+                        : 0;
+                    const isSelected = trade.id === selectedTradeId;
+                    const hasEstimates = allProjectEstimates.some(
+                      (estimate) => estimate.trade_id === trade.id
+                    );
+
+                    return (
+                      <tr key={trade.id} style={{ background: isSelected ? "#f5f5f5" : "white" }}>
+                        <td style={tableCellStyle}>{trade.name}</td>
+                        <td style={tableCellStyle}>
+                          {lowest
+                            ? `${lowest.vendor_name} - $${Number(lowest.estimate_amount).toFixed(2)}`
+                            : "None"}
+                        </td>
+                        <td style={tableCellStyle}>
+                          {awarded
+                            ? `${awarded.vendor_name} - $${Number(awarded.estimate_amount).toFixed(2)}`
+                            : "None"}
+                        </td>
+                        <td style={tableCellStyle}>
+                          {awarded && lowest
+                            ? `${tradeDifference >= 0 ? "+" : "-"}$${Math.abs(tradeDifference).toFixed(2)}`
+                            : "N/A"}
+                        </td>
+                        <td style={tableCellStyle}>
+                          <button onClick={() => setSelectedTradeId(trade.id)}>
+                            {isSelected ? "Current Trade" : "Open Trade"}
+                          </button>
+                          {canEdit && (
+                            <button
+                              onClick={() => awardLowestForTrade(trade.id)}
+                              disabled={!hasEstimates}
+                              style={{ marginLeft: 8 }}
+                            >
+                              Award Lowest
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            <h3>Current Trade</h3>
+            {selectedTrade ? (
+              <>
+                <p>
+                  <strong>{selectedTrade.name}</strong>
+                </p>
+
+                {canEdit && (
+                  <>
+                    <div style={{ marginBottom: 16 }}>
+                      <button
+                        onClick={() => awardLowestForTrade(selectedTrade.id)}
+                        disabled={currentTradeEstimates.length === 0}
+                      >
+                        Award Lowest for This Trade
+                      </button>
+                    </div>
+
+                    <h4>Add Vendor Estimate</h4>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+                      <input
+                        type="text"
+                        placeholder="Vendor name"
+                        value={vendorName}
+                        onChange={(e) => setVendorName(e.target.value)}
+                        style={{ ...inputStyle, padding: 10, width: 180 }}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Estimate amount"
+                        value={estimateAmount}
+                        onChange={(e) => setEstimateAmount(e.target.value)}
+                        style={{ ...inputStyle, padding: 10, width: 160 }}
+                      />
+                      <input
+                        type="date"
+                        value={receivedAt}
+                        onChange={(e) => setReceivedAt(e.target.value)}
+                        style={{ ...inputStyle, padding: 10 }}
+                      />
+                      <input
+                        type="text"
+                        placeholder="Notes"
+                        value={estimateNotes}
+                        onChange={(e) => setEstimateNotes(e.target.value)}
+                        style={{ ...inputStyle, padding: 10, width: 220 }}
+                      />
+                      <button onClick={handleCreateEstimate}>Add Estimate</button>
+                    </div>
+                  </>
+                )}
+
+                <h4>Editable Bid Board</h4>
+                {currentTradeEstimates.length === 0 ? (
+                  <p>No estimates yet.</p>
+                ) : (
+                  <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 20 }}>
+                    <thead>
+                      <tr>
+                        <th style={tableHeaderStyle}>Trade</th>
+                        <th style={tableHeaderStyle}>Vendor</th>
+                        <th style={tableHeaderStyle}>Estimate</th>
+                        <th style={tableHeaderStyle}>Received</th>
+                        <th style={tableHeaderStyle}>Notes</th>
+                        <th style={tableHeaderStyle}>Status</th>
+                        <th style={tableHeaderStyle}>Quote</th>
+                        <th style={tableHeaderStyle}>Save</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {currentTradeEstimates.map((estimate) => {
+                        const draft = editingEstimates[estimate.id];
+                        const isLowest = lowestEstimate?.id === estimate.id;
+                        const isAwarded = estimate.status === "awarded";
+                        const quoteUrl = getQuoteUrl(estimate.file_path);
+
+                        return (
+                          <tr
+                            key={estimate.id}
+                            style={{
+                              background: isAwarded
+                                ? "#dff7df"
+                                : isLowest
+                                ? "#fff8d9"
+                                : "white",
+                            }}
+                          >
+                            <td style={tableCellStyle}>{selectedTrade.name}</td>
+
+                            <td style={tableCellStyle}>
+                              <input
+                                value={draft?.vendor_name ?? ""}
+                                onChange={(e) =>
+                                  updateEstimateDraft(estimate.id, "vendor_name", e.target.value)
+                                }
+                                disabled={!canEdit}
+                                style={{
+                                  ...inputStyle,
+                                  width: "100%",
+                                  padding: 6,
+                                  opacity: canEdit ? 1 : 0.75,
+                                }}
+                              />
+                            </td>
+
+                            <td style={tableCellStyle}>
+                              <input
+                                type="number"
+                                value={draft?.estimate_amount ?? ""}
+                                onChange={(e) =>
+                                  updateEstimateDraft(
+                                    estimate.id,
+                                    "estimate_amount",
+                                    e.target.value
+                                  )
+                                }
+                                disabled={!canEdit}
+                                style={{
+                                  ...inputStyle,
+                                  width: 120,
+                                  padding: 6,
+                                  opacity: canEdit ? 1 : 0.75,
+                                }}
+                              />
+                            </td>
+
+                            <td style={tableCellStyle}>
+                              <input
+                                type="date"
+                                value={draft?.received_at ?? ""}
+                                onChange={(e) =>
+                                  updateEstimateDraft(estimate.id, "received_at", e.target.value)
+                                }
+                                disabled={!canEdit}
+                                style={{
+                                  ...inputStyle,
+                                  padding: 6,
+                                  opacity: canEdit ? 1 : 0.75,
+                                }}
+                              />
+                            </td>
+
+                            <td style={tableCellStyle}>
+                              <input
+                                value={draft?.notes ?? ""}
+                                onChange={(e) =>
+                                  updateEstimateDraft(estimate.id, "notes", e.target.value)
+                                }
+                                disabled={!canEdit}
+                                style={{
+                                  ...inputStyle,
+                                  width: "100%",
+                                  padding: 6,
+                                  opacity: canEdit ? 1 : 0.75,
+                                }}
+                              />
+                            </td>
+
+                            <td style={tableCellStyle}>
+                              <select
+                                value={draft?.status ?? "pending"}
+                                onChange={(e) =>
+                                  updateEstimateDraft(
+                                    estimate.id,
+                                    "status",
+                                    e.target.value as "pending" | "awarded" | "denied"
+                                  )
+                                }
+                                disabled={!canEdit}
+                                style={{
+                                  ...inputStyle,
+                                  padding: 6,
+                                  opacity: canEdit ? 1 : 0.75,
+                                }}
+                              >
+                                <option value="pending">pending</option>
+                                <option value="awarded">awarded</option>
+                                <option value="denied">denied</option>
+                              </select>
+                              <div style={{ fontSize: 12, marginTop: 4, color: "black" }}>
+                                {isLowest ? "Lowest" : ""}
+                              </div>
+                            </td>
+
+                            <td style={tableCellStyle}>
+                              {quoteUrl ? (
+                                <div style={{ marginBottom: 6 }}>
+                                  <a href={quoteUrl} target="_blank" rel="noreferrer">
+                                    View Quote
+                                  </a>
+                                </div>
+                              ) : (
+                                <div style={{ marginBottom: 6 }}>No file</div>
+                              )}
+
+                              {canEdit && (
+                                <input
+                                  type="file"
+                                  accept=".pdf,.doc,.docx,.xlsx,.xls,.png,.jpg,.jpeg"
+                                  onChange={(e) =>
+                                    handleUploadQuote(estimate.id, e.target.files?.[0] ?? null)
+                                  }
+                                  style={{ maxWidth: 180 }}
+                                />
+                              )}
+                            </td>
+
+                            <td style={tableCellStyle}>
+                              {canEdit ? (
+                                <>
+                                  <button
+                                    onClick={() => saveEstimateRow(estimate.id, estimate.trade_id)}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={() => deleteEstimateRow(estimate.id)}
+                                    style={{ marginLeft: 8 }}
+                                  >
+                                    Delete
+                                  </button>
+                                </>
+                              ) : (
+                                <span>Read only</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+
+                <h4>Current Trade Summary</h4>
+                <p>
+                  Lowest estimate:{" "}
+                  {lowestEstimate
+                    ? `${lowestEstimate.vendor_name} - $${Number(
+                        lowestEstimate.estimate_amount
+                      ).toFixed(2)}`
+                    : "None"}
+                </p>
+                <p>
+                  Awarded estimate:{" "}
+                  {awardedEstimate
+                    ? `${awardedEstimate.vendor_name} - $${Number(
+                        awardedEstimate.estimate_amount
+                      ).toFixed(2)}`
+                    : "None"}
+                </p>
+                <p>
+                  Difference from lowest:{" "}
+                  <strong>
+                    {awardedEstimate && lowestEstimate
+                      ? `${currentTradeDifferenceFromLowest >= 0 ? "+" : "-"}$${Math.abs(
+                          currentTradeDifferenceFromLowest
+                        ).toFixed(2)}`
+                      : "N/A"}
+                  </strong>
+                </p>
+                <p>
+                  5% management fee on awarded estimate: $
+                  {currentTradeManagementFee.toFixed(2)}
+                </p>
+                <p>
+                  <strong>
+                    Final awarded total for this trade: ${currentTradeFinalTotal.toFixed(2)}
+                  </strong>
+                </p>
+              </>
+            ) : (
+              <p>Select a trade first.</p>
+            )}
+          </div>
+        </>
+      ) : (
+        <p>Select a project first.</p>
+      )}
+
+      <p style={{ marginTop: 20 }} className="no-print">{message}</p>
     </div>
-  )
+  );
 }
